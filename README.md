@@ -22,36 +22,6 @@ I will add complete instructions soon
 }
 ```
 
-## Sniffer configuration
-
-When the sniffer starts it automatically looks for running Dofus processes and
-derives the active TCP ports from their sockets. This means in most setups you
-can simply run `main.py` without any manual configuration and packets will be
-captured as soon as the game is connected. The same discovery step also
-identifies the network interfaces that carry the game traffic (for example the
-loopback interface when using the Ankama Launcher). On Linux the sniffer
-automatically falls back to the special `any` interface so both loopback and
-physical interfaces are monitored when the interface cannot be inferred.
-
-If automatic detection fails, the sniffer falls back to the historical game
-ports (5555 and 443) and prints a warning. You can always override the ports
-explicitly when instantiating the sniffer:
-
-```python
-from Sniffer import Sniffer
-
-Sniffer(ports=5556).run(callback)
-# or multiple ports
-Sniffer(ports=[5555, 5556]).run(callback)
-```
-
-The override also works when calling `run`:
-
-```python
-sniffer = Sniffer()
-sniffer.run(callback, ports=443)
-```
-
 ```
 {
     "objectType": 16,
@@ -73,4 +43,28 @@ sniffer.run(callback, ports=443)
         ...
     ]
 }
+```
+
+## Sniffer configuration
+
+The sniffer attempts to locate running Dofus clients and monitors the TCP ports
+those processes use. In most environments you can run `main.py` directly and the
+sniffer will discover the correct ports and interfaces automatically. When
+auto-detection fails the sniffer falls back to ports 5555 and 443.
+
+You can still override the ports when instantiating the sniffer:
+
+```python
+from Sniffer import Sniffer
+
+Sniffer(ports=5556).run(callback)
+# or multiple ports
+Sniffer(ports=[5555, 5556]).run(callback)
+```
+
+The override is also available on `run`:
+
+```python
+sniffer = Sniffer()
+sniffer.run(callback, ports=443)
 ```

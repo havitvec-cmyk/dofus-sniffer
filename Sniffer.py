@@ -1,13 +1,9 @@
-import platform
-import subprocess
-import socket
-
-from scapy.all import sniff, Raw, IP, ICMP  # pylint: disable=no-name-in-module
+from scapy.all import sniff, Raw, IP, ICMP # pylint: disable=no-name-in-module
 from colorama import Fore, Back, Style
-
 from CustomDataWrapper import Data, Buffer
 from ProtocolBuilder import ProtocolBuilder
-from Misc import *  # pylint: disable=unused-wildcard-import
+from Misc import * # pylint: disable=unused-wildcard-import
+from dofus_network import resolve_ports_and_interfaces
 
 class Msg():
     def __init__(self, buffer, protocol):
@@ -42,114 +38,6 @@ class Msg():
     def __bool__(self):
         return self.b
 
-def _normalize_ports(ports):
-    if ports is None:
-        return None
-    if isinstance(ports, (int, str)):
-        ports = [ports]
-    normalized = []
-    for port in ports:
-        try:
-            normalized_port = int(port)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Invalid TCP port: {port}") from exc
-        if not 0 < normalized_port < 65536:
-            raise ValueError(f"Port out of range: {normalized_port}")
-        normalized.append(normalized_port)
-    # Preserve order while removing duplicates
-    return list(dict.fromkeys(normalized))
-
-
-def _auto_detect_dofus_ports():
-    ports = set()
-    interfaces = set()
-
-    try:
-        import psutil  # type: ignore
-    except ImportError:
-        psutil = None
-
-    if psutil:
-        try:
-            addr_map = {}
-            for iface, addr_info_list in psutil.net_if_addrs().items():
-                for addr in addr_info_list:
-                    if addr.family in (socket.AF_INET, socket.AF_INET6):
-                        addr_map.setdefault(addr.address, set()).add(iface)
-            for proc in psutil.process_iter(["name", "cmdline"]):
-                info = proc.info
-                name = (info.get("name") or "").lower()
-                cmdline = " ".join(info.get("cmdline") or ()).lower()
-                if "dofus" not in name and "dofus" not in cmdline:
-                    continue
-                for conn in proc.connections(kind="inet"):
-                    if getattr(psutil, "CONN_LISTEN", None) and conn.status == psutil.CONN_LISTEN:
-                        continue
-                    if conn.laddr:
-                        local_ip = getattr(conn.laddr, "ip", None) or conn.laddr[0]
-                        ports.add(conn.laddr.port)
-                        interfaces.update(addr_map.get(local_ip, set()))
-                        if (local_ip or "").startswith("127."):
-                            interfaces.add("lo")
-                    if conn.raddr:
-                        remote_ip = getattr(conn.raddr, "ip", None) or conn.raddr[0]
-                        if (remote_ip or "").startswith("127."):
-                            ports.add(conn.raddr.port)
-                            interfaces.add("lo")
-        except (psutil.Error, OSError) as exc:  # pragma: no cover - defensive
-            wprint(f"Failed to inspect Dofus process sockets via psutil: {exc}")
-
-    if ports:
-        return sorted(ports), sorted(interfaces)
-
-    try:
-        output = subprocess.check_output(["ss", "-tupn"], text=True, stderr=subprocess.STDOUT)
-    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        wprint(f"Unable to run 'ss' for port discovery: {exc}")
-        return [], []
-
-    def _parse_endpoint(endpoint):
-        endpoint = endpoint.strip()
-        if not endpoint:
-            return None, None
-        if endpoint.startswith("[") and "]" in endpoint:
-            host, _, rest = endpoint[1:].partition("]")
-            _, _, port = rest.partition(":")
-        else:
-            host, _, port = endpoint.rpartition(":")
-        host = host.strip()
-        port = port.strip()
-        if not port.isdigit():
-            return host, None
-        return host, int(port)
-
-    for line in output.splitlines():
-        lower = line.lower()
-        if "dofus" not in lower:
-            continue
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        local_host, local_port = _parse_endpoint(parts[3])
-        if local_port:
-            ports.add(local_port)
-            if (local_host or "").startswith("127."):
-                interfaces.add("lo")
-        if len(parts) >= 5:
-            remote_host, remote_port = _parse_endpoint(parts[4])
-            if remote_port and (remote_host or "").startswith("127."):
-                ports.add(remote_port)
-                interfaces.add("lo")
-
-    return sorted(ports), sorted(interfaces)
-
-
-def _default_interfaces():
-    if platform.system() == "Linux":
-        return ["any"]
-    return []
-
-
 class Sniffer:
     def __init__(self, concatMode = True, ports = None):
         self.protocolBuilder = ProtocolBuilder()
@@ -157,26 +45,7 @@ class Sniffer:
         self.buffer = Buffer()
         self.concatMode = concatMode
         self.lastPkt = None
-        self.interfaces = []
-        normalized = _normalize_ports(ports)
-        if normalized is not None:
-            self.ports = normalized
-            self.interfaces = _default_interfaces()
-        else:
-            detected_ports, detected_ifaces = _auto_detect_dofus_ports()
-            if detected_ports:
-                sprint(f"Automatically detected Dofus ports: {', '.join(map(str, detected_ports))}")
-                if detected_ifaces:
-                    sprint(f"Automatically selected interfaces: {', '.join(detected_ifaces)}")
-                self.ports = detected_ports
-                self.interfaces = detected_ifaces or _default_interfaces()
-            else:
-                wprint("Could not automatically determine Dofus ports. Falling back to defaults (5555, 443).")
-                self.ports = [5555, 443]
-                self.interfaces = _default_interfaces()
-
-        if not self.interfaces:
-            self.interfaces = _default_interfaces()
+        self.ports, self.interfaces = resolve_ports_and_interfaces(ports)
 
     def _build_filter(self):
         if not self.ports:
@@ -184,7 +53,7 @@ class Sniffer:
         port_filters = ' or '.join(f'port {port}' for port in self.ports)
         return f'tcp and ({port_filters})'
 
-    def _get_sniff_interfaces(self):
+    def _get_iface(self):
         if not self.interfaces:
             return None
         if len(self.interfaces) == 1:
@@ -194,18 +63,18 @@ class Sniffer:
     def run(self, callback, whitelist = None, ports = None):
         self.callback = callback
         self.whitelist = whitelist
-        override_ports = _normalize_ports(ports)
-        if override_ports is not None:
-            self.ports = override_ports
+        if ports is not None:
+            self.ports, self.interfaces = resolve_ports_and_interfaces(ports)
         sprint(f"Listening for TCP traffic on ports: {', '.join(map(str, self.ports))}")
-        sniff_ifaces = self._get_sniff_interfaces()
-        if sniff_ifaces:
-            sprint(f"Capturing on interfaces: {', '.join(self.interfaces if isinstance(sniff_ifaces, list) else [sniff_ifaces])}")
+        iface = self._get_iface()
+        if iface:
+            selected = self.interfaces if isinstance(iface, list) else [iface]
+            sprint(f"Capturing on interfaces: {', '.join(selected)}")
         sniff(
             filter=self._build_filter(),
             lfilter = lambda pkt: pkt.haslayer(Raw),
             prn = lambda pkt: self.receive(pkt),
-            iface=sniff_ifaces,
+            iface=iface,
             store=False
         )
 
@@ -229,5 +98,5 @@ class Sniffer:
                 if msg.id in self.whitelist:
                     self.callback(msg.id, self.protocolBuilder.build(msg.id, msg.data))
             else:
-                self.callback(msg.id, self.protocolBuilder.build(msg.id, msg.data))
+                    self.callback(msg.id, self.protocolBuilder.build(msg.id, msg.data))
             msg = Msg(self.buffer, self.protocol)

@@ -6,7 +6,8 @@ from colorama import Fore, Back, Style
 
 from CustomDataWrapper import Data, Buffer
 from ProtocolBuilder import ProtocolBuilder
-from Misc import *  # pylint: disable=unused-wildcard-import
+from Misc import * # pylint: disable=unused-wildcard-import
+from dofus_network import resolve_ports_and_interfaces
 
 class Msg():
     def __init__(self, buffer, protocol):
@@ -112,17 +113,7 @@ class Sniffer:
         self.buffer = Buffer()
         self.concatMode = concatMode
         self.lastPkt = None
-        normalized = _normalize_ports(ports)
-        if normalized is not None:
-            self.ports = normalized
-        else:
-            detected = _auto_detect_dofus_ports()
-            if detected:
-                sprint(f"Automatically detected Dofus ports: {', '.join(map(str, detected))}")
-                self.ports = detected
-            else:
-                wprint("Could not automatically determine Dofus ports. Falling back to defaults (5555, 443).")
-                self.ports = [5555, 443]
+        self.ports, self.interfaces = resolve_ports_and_interfaces(ports)
 
     def _build_filter(self):
         if not self.ports:
@@ -130,17 +121,29 @@ class Sniffer:
         port_filters = ' or '.join(f'port {port}' for port in self.ports)
         return f'tcp and ({port_filters})'
 
+    def _get_iface(self):
+        if not self.interfaces:
+            return None
+        if len(self.interfaces) == 1:
+            return self.interfaces[0]
+        return self.interfaces
+
     def run(self, callback, whitelist = None, ports = None):
         self.callback = callback
         self.whitelist = whitelist
-        override_ports = _normalize_ports(ports)
-        if override_ports is not None:
-            self.ports = override_ports
+        if ports is not None:
+            self.ports, self.interfaces = resolve_ports_and_interfaces(ports)
         sprint(f"Listening for TCP traffic on ports: {', '.join(map(str, self.ports))}")
+        iface = self._get_iface()
+        if iface:
+            selected = self.interfaces if isinstance(iface, list) else [iface]
+            sprint(f"Capturing on interfaces: {', '.join(selected)}")
         sniff(
             filter=self._build_filter(),
             lfilter = lambda pkt: pkt.haslayer(Raw),
-            prn = lambda pkt: self.receive(pkt)
+            prn = lambda pkt: self.receive(pkt),
+            iface=iface,
+            store=False
         )
 
     def receive(self, pkt):

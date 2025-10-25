@@ -70,3 +70,27 @@ sniffer.run(callback, ports=443)
     ]
 }
 ```
+
+## Sniffer configuration
+
+The sniffer attempts to locate running Dofus clients and monitors the TCP ports
+those processes use. In most environments you can run `main.py` directly and the
+sniffer will discover the correct ports and interfaces automatically. When
+auto-detection fails the sniffer falls back to ports 5555 and 443.
+
+You can still override the ports when instantiating the sniffer:
+
+```python
+from Sniffer import Sniffer
+
+Sniffer(ports=5556).run(callback)
+# or multiple ports
+Sniffer(ports=[5555, 5556]).run(callback)
+```
+
+The override is also available on `run`:
+
+```python
+sniffer = Sniffer()
+sniffer.run(callback, ports=443)
+```

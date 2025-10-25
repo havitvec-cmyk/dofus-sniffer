@@ -1,5 +1,9 @@
-from scapy.all import sniff, Raw, IP, ICMP # pylint: disable=no-name-in-module
+import re
+import subprocess
+
+from scapy.all import sniff, Raw, IP, ICMP  # pylint: disable=no-name-in-module
 from colorama import Fore, Back, Style
+
 from CustomDataWrapper import Data, Buffer
 from ProtocolBuilder import ProtocolBuilder
 from Misc import * # pylint: disable=unused-wildcard-import
@@ -37,6 +41,70 @@ class Msg():
 
     def __bool__(self):
         return self.b
+
+def _normalize_ports(ports):
+    if ports is None:
+        return None
+    if isinstance(ports, (int, str)):
+        ports = [ports]
+    normalized = []
+    for port in ports:
+        try:
+            normalized_port = int(port)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid TCP port: {port}") from exc
+        if not 0 < normalized_port < 65536:
+            raise ValueError(f"Port out of range: {normalized_port}")
+        normalized.append(normalized_port)
+    # Preserve order while removing duplicates
+    return list(dict.fromkeys(normalized))
+
+
+def _auto_detect_dofus_ports():
+    ports = set()
+
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        psutil = None
+
+    if psutil:
+        try:
+            for proc in psutil.process_iter(["name", "cmdline"]):
+                info = proc.info
+                name = (info.get("name") or "").lower()
+                cmdline = " ".join(info.get("cmdline") or ()).lower()
+                if "dofus" not in name and "dofus" not in cmdline:
+                    continue
+                for conn in proc.connections(kind="inet"):
+                    if getattr(psutil, "CONN_LISTEN", None) and conn.status == psutil.CONN_LISTEN:
+                        continue
+                    if conn.laddr:
+                        ports.add(conn.laddr.port)
+                    if conn.raddr:
+                        ports.add(conn.raddr.port)
+        except Exception as exc:  # pragma: no cover - defensive
+            wprint(f"Failed to inspect Dofus process sockets via psutil: {exc}")
+
+    if ports:
+        return sorted(ports)
+
+    try:
+        output = subprocess.check_output(["ss", "-tupn"], text=True, stderr=subprocess.STDOUT)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        wprint(f"Unable to run 'ss' for port discovery: {exc}")
+        return []
+
+    for line in output.splitlines():
+        if "dofus" not in line.lower():
+            continue
+        for match in re.findall(r":(\d+)", line):
+            port = int(match)
+            if 0 < port < 65536:
+                ports.add(port)
+
+    return sorted(ports)
+
 
 class Sniffer:
     def __init__(self, concatMode = True, ports = None):
@@ -98,5 +166,5 @@ class Sniffer:
                 if msg.id in self.whitelist:
                     self.callback(msg.id, self.protocolBuilder.build(msg.id, msg.data))
             else:
-                    self.callback(msg.id, self.protocolBuilder.build(msg.id, msg.data))
+                self.callback(msg.id, self.protocolBuilder.build(msg.id, msg.data))
             msg = Msg(self.buffer, self.protocol)

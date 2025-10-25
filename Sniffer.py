@@ -1,5 +1,4 @@
 import platform
-import re
 import subprocess
 import socket
 
@@ -87,13 +86,17 @@ def _auto_detect_dofus_ports():
                     if getattr(psutil, "CONN_LISTEN", None) and conn.status == psutil.CONN_LISTEN:
                         continue
                     if conn.laddr:
+                        local_ip = getattr(conn.laddr, "ip", None) or conn.laddr[0]
                         ports.add(conn.laddr.port)
-                        interfaces.update(addr_map.get(getattr(conn.laddr, "ip", None), set()))
-                        if getattr(conn.laddr, "ip", "").startswith("127."):
+                        interfaces.update(addr_map.get(local_ip, set()))
+                        if (local_ip or "").startswith("127."):
                             interfaces.add("lo")
                     if conn.raddr:
-                        ports.add(conn.raddr.port)
-        except Exception as exc:  # pragma: no cover - defensive
+                        remote_ip = getattr(conn.raddr, "ip", None) or conn.raddr[0]
+                        if (remote_ip or "").startswith("127."):
+                            ports.add(conn.raddr.port)
+                            interfaces.add("lo")
+        except (psutil.Error, OSError) as exc:  # pragma: no cover - defensive
             wprint(f"Failed to inspect Dofus process sockets via psutil: {exc}")
 
     if ports:
@@ -105,15 +108,40 @@ def _auto_detect_dofus_ports():
         wprint(f"Unable to run 'ss' for port discovery: {exc}")
         return [], []
 
-    for line in output.splitlines():
-        if "dofus" not in line.lower():
-            continue
-        for match in re.findall(r":(\d+)", line):
-            port = int(match)
-            if 0 < port < 65536:
-                ports.add(port)
+    def _parse_endpoint(endpoint):
+        endpoint = endpoint.strip()
+        if not endpoint:
+            return None, None
+        if endpoint.startswith("[") and "]" in endpoint:
+            host, _, rest = endpoint[1:].partition("]")
+            _, _, port = rest.partition(":")
+        else:
+            host, _, port = endpoint.rpartition(":")
+        host = host.strip()
+        port = port.strip()
+        if not port.isdigit():
+            return host, None
+        return host, int(port)
 
-    return sorted(ports), []
+    for line in output.splitlines():
+        lower = line.lower()
+        if "dofus" not in lower:
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        local_host, local_port = _parse_endpoint(parts[3])
+        if local_port:
+            ports.add(local_port)
+            if (local_host or "").startswith("127."):
+                interfaces.add("lo")
+        if len(parts) >= 5:
+            remote_host, remote_port = _parse_endpoint(parts[4])
+            if remote_port and (remote_host or "").startswith("127."):
+                ports.add(remote_port)
+                interfaces.add("lo")
+
+    return sorted(ports), sorted(interfaces)
 
 
 def _default_interfaces():

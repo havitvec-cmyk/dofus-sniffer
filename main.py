@@ -9,6 +9,7 @@ from Misc import sprint
 from Sniffer import Sniffer
 from parser.dofus_retro_framing import RetroReassembler
 from discover.dofus_targets import TargetSet, start_discovery_thread
+from protocol.message_map import MESSAGE_MAP  # noqa: F401 imported for future binary decoding support
 from protocol.retro_handlers import dispatch as retro_dispatch
 
 conf.use_pcap = True
@@ -88,7 +89,7 @@ def _run_cli():
 
     if args.only_dofus:
         names = args.proc_name or None
-        start_discovery_thread(TARGETS, names, args.refresh_seconds)
+        start_discovery_thread(TARGETS, names, args.refresh_seconds, block_until_found=True)
 
     manual_ports_list: Optional[List[int]] = None
     manual_ports_set: Set[int] = set()
@@ -190,19 +191,37 @@ def _run_cli():
             return True
         if IP not in pkt or TCP not in pkt:
             return False
+
         ip = pkt[IP]
         tcp = pkt[TCP]
         ports, ips = TARGETS.snapshot()
+
         try:
             sport = int(tcp.sport)
             dport = int(tcp.dport)
         except Exception:
-            sport = tcp.sport
-            dport = tcp.dport
+            return False
+
+        src_ip = ip.src
+        dst_ip = ip.dst
+
+        if not ports and not ips:
+            return False
+
         if sport in ports or dport in ports:
+            if sport == 443 or dport == 443:
+                if src_ip in ips or dst_ip in ips:
+                    return True
+                return False
             return True
-        if ip.src in ips or ip.dst in ips:
+
+        if src_ip in ips or dst_ip in ips:
+            if sport == 443 or dport == 443:
+                if src_ip in ips or dst_ip in ips:
+                    return True
+                return False
             return True
+
         return False
 
     if args.loose_bpf:

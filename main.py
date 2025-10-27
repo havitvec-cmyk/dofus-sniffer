@@ -1,11 +1,50 @@
 import argparse
 from typing import Iterable, Optional, Set, List
 
-from scapy.all import conf, sniff, Raw
-from scapy.layers.inet import TCP
+from scapy.all import conf, sniff
+from scapy.layers.inet import IP, TCP
+from scapy.packet import Raw
 
 from Misc import sprint
 from Sniffer import Sniffer
+from parser.dofus_retro_framing import RetroReassembler
+from protocol.retro_opcodes import OPCODES
+
+conf.use_pcap = True
+conf.sniff_promisc = False
+
+
+RETRO = RetroReassembler()
+
+
+def _parse_ports(s: str) -> Set[int]:
+    st: Set[int] = set()
+    for part in s.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            a, b = map(int, part.split('-', 1))
+            st.update(range(min(a, b), max(a, b) + 1))
+        else:
+            st.add(int(part))
+    return st
+
+
+def _raw_fallback_print(pkt):
+    try:
+        ip = pkt.getlayer("IP")
+        tcp = pkt.getlayer("TCP")
+        if ip and tcp:
+            print(f"[RAW] {ip.src}:{tcp.sport} -> {ip.dst}:{tcp.dport}  len={len(bytes(pkt))}")
+        else:
+            print("[RAW]", pkt.summary())
+    except Exception:
+        try:
+            print("[RAW]", pkt.summary())
+        except Exception:
+            pass
+
 
 conf.use_pcap = True
 conf.sniff_promisc = False
@@ -59,6 +98,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Comma-separated list to override autodetected interfaces.")
     parser.add_argument("--ports", default=None,
                         help="Comma-separated or ranges to override autodetected ports.")
+    parser.add_argument("--retro", action="store_true", default=True,
+                        help="Use Dofus Retro ASCII parser.")
     return parser
 
 
@@ -112,8 +153,48 @@ def _run_cli():
     sniffer.whitelist = None
 
     def on_packet(pkt):
-        if not pkt.haslayer(Raw):
+        sniffer._current_packet = pkt
+        if args.retro:
+            frames_emitted = False
+            try:
+                if IP in pkt and TCP in pkt:
+                    ip = pkt[IP]
+                    tcp = pkt[TCP]
+                    raw_layer = pkt.getlayer(Raw)
+                    if raw_layer and getattr(raw_layer, "load", None):
+                        k = (ip.src, int(tcp.sport), ip.dst, int(tcp.dport))
+                        frames = RETRO.feed(k, raw_layer.load)
+                        for fr in frames:
+                            name = OPCODES.get(fr["opcode"])
+                            if name:
+                                print(
+                                    f"[RETRO] {ip.src}:{tcp.sport}->{ip.dst}:{tcp.dport} "
+                                    f"op={fr['opcode']} ({name}) text={fr['text']!r}"
+                                )
+                            else:
+                                print(
+                                    f"[RETRO] {ip.src}:{tcp.sport}->{ip.dst}:{tcp.dport} "
+                                    f"op={fr['opcode']} text={fr['text']!r}"
+                                )
+                            frames_emitted = True
+            except Exception as e:
+                print("retro_packet_error:", e)
+
+            if args.print_raw or not frames_emitted:
+                try:
+                    _raw_fallback_print(pkt)
+                except Exception:
+                    pass
             return
+
+        if not pkt.haslayer(Raw):
+            if args.print_raw:
+                try:
+                    _raw_fallback_print(pkt)
+                except Exception:
+                    pass
+            return
+
         sniffer._decoded_last = False
         sniffer._current_packet = pkt
         sniffer.receive(pkt)

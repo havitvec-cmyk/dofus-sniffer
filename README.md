@@ -110,3 +110,10 @@ Notes
 Replace wlan0 with your actual Wi-Fi interface (e.g., wlp3s0).
 
 Refresh ports from sudo ss -tupn | grep -i dofus each launch if needed.
+
+### Dofus Retro (1.x)
+Capture the loopback (IPC to 26117) + your Wi-Fi/Ethernet interface:
+
+sudo /home/cephes/Documents/ds/dofus-sniffer/.venv/bin/python main.py \
+  --retro --loose-bpf --print-raw \
+  --interfaces lo,wlan0

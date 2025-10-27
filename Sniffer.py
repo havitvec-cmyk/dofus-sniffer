@@ -3,6 +3,7 @@ from colorama import Fore, Back, Style
 from CustomDataWrapper import Data, Buffer
 from ProtocolBuilder import ProtocolBuilder
 from Misc import * # pylint: disable=unused-wildcard-import
+from dofus_network import resolve_ports_and_interfaces
 
 class Msg():
     def __init__(self, buffer, protocol):
@@ -38,20 +39,43 @@ class Msg():
         return self.b
 
 class Sniffer:
-    def __init__(self, concatMode = True):
+    def __init__(self, concatMode = True, ports = None):
         self.protocolBuilder = ProtocolBuilder()
         self.protocol = self.protocolBuilder.protocol
         self.buffer = Buffer()
         self.concatMode = concatMode
         self.lastPkt = None
+        self.ports, self.interfaces = resolve_ports_and_interfaces(ports)
 
-    def run(self, callback, whitelist = None):
+    def _build_filter(self):
+        if not self.ports:
+            return 'tcp'
+        port_filters = ' or '.join(f'port {port}' for port in self.ports)
+        return f'tcp and ({port_filters})'
+
+    def _get_iface(self):
+        if not self.interfaces:
+            return None
+        if len(self.interfaces) == 1:
+            return self.interfaces[0]
+        return self.interfaces
+
+    def run(self, callback, whitelist = None, ports = None):
         self.callback = callback
         self.whitelist = whitelist
+        if ports is not None:
+            self.ports, self.interfaces = resolve_ports_and_interfaces(ports)
+        sprint(f"Listening for TCP traffic on ports: {', '.join(map(str, self.ports))}")
+        iface = self._get_iface()
+        if iface:
+            selected = self.interfaces if isinstance(iface, list) else [iface]
+            sprint(f"Capturing on interfaces: {', '.join(selected)}")
         sniff(
-            filter='tcp src port 5555',
+            filter=self._build_filter(),
             lfilter = lambda pkt: pkt.haslayer(Raw),
-            prn = lambda pkt: self.receive(pkt)
+            prn = lambda pkt: self.receive(pkt),
+            iface=iface,
+            store=False
         )
 
     def receive(self, pkt):

@@ -44,3 +44,56 @@ I will add complete instructions soon
     ]
 }
 ```
+
+## Sniffer configuration
+
+The sniffer attempts to locate running Dofus clients and monitors the TCP ports
+those processes use. In most environments you can run `main.py` directly and the
+sniffer will discover the correct ports and interfaces automatically. When
+auto-detection fails the sniffer falls back to ports 5555 and 443.
+
+You can still override the ports when instantiating the sniffer:
+
+```python
+from Sniffer import Sniffer
+
+Sniffer(ports=5556).run(callback)
+# or multiple ports
+Sniffer(ports=[5555, 5556]).run(callback)
+```
+
+The override is also available on `run`:
+
+```python
+sniffer = Sniffer()
+sniffer.run(callback, ports=443)
+```
+
+### Debug: always see packets
+# Loopback (IPC)
+sudo python tools/scapy_lo_test.py
+
+# Multi-if, robust capture that always prints:
+sudo python tools/live_capture_debug.py -i lo,wlan0 -p 26117,52000-60000
+
+# Main sniffer with robust mode:
+sudo python main.py --loose-bpf --print-raw --interfaces lo,wlan0 --ports 26117,52000-60000
+
+Notes
+
+Replace wlan0 with your actual Wi-Fi interface (e.g., wlp3s0).
+
+Refresh ports from sudo ss -tupn | grep -i dofus each launch if needed.
+
+### Dofus Retro (1.x)
+Capture the loopback (IPC to 26117) + your Wi-Fi/Ethernet interface:
+
+sudo /home/cephes/Documents/ds/dofus-sniffer/.venv/bin/python main.py \
+  --retro --loose-bpf --print-raw \
+  --interfaces lo,wlan0
+
+### Dofus Retro — Capture only Dofus packets
+sudo /home/USER/Documents/ds/dofus-sniffer/.venv/bin/python main.py \
+  --retro --only-dofus --loose-bpf --print-raw \
+  --interfaces lo,wlan0 \
+  --proc-name dofus1electron --refresh-seconds 2

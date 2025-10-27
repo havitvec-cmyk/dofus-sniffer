@@ -1,12 +1,7 @@
 # parser/dofus_retro_framing.py
-# Dofus Retro (1.x) ASCII line-based framing with TCP reassembly.
-# Messages are typically ASCII lines ending with \n (sometimes \r\n or \x00).
-# Examples: "HC...", "AS...", "GA300|...", "Af...", etc.
-
 from typing import Dict, Tuple, List
 
-DELIMS = (b'\n', b'\x00')  # handle \n and \x00; we’ll also strip trailing \r
-
+DELIMS = (b'\n', b'\x00')
 
 class RetroStream:
     __slots__ = ("buf",)
@@ -15,14 +10,17 @@ class RetroStream:
         self.buf = bytearray()
 
     def _find_next_delim(self) -> int:
-        # Return index of first delimiter occurrence, or -1
         if not self.buf:
             return -1
-        # Find the earliest of \n or \x00
-        i_n = self.buf.find(b'\n')
-        i_0 = self.buf.find(b'\x00')
-        idxs = [i for i in (i_n, i_0) if i != -1]
+        idxs = [i for d in DELIMS if (i := self.buf.find(d)) != -1]
         return min(idxs) if idxs else -1
+
+    def _extract_opcode(self, line: bytes) -> str:
+        i = 0
+        n = len(line)
+        while i < n and (line[i:i+1].isalnum()):
+            i += 1
+        return line[:i].decode(errors="replace")
 
     def feed(self, data: bytes) -> List[dict]:
         if data:
@@ -34,54 +32,39 @@ class RetroStream:
             if idx < 0:
                 break
 
-            line = bytes(self.buf[:idx])  # exclude delimiter
-            # consume including the delimiter
+            line = bytes(self.buf[:idx])
             del self.buf[:idx+1]
-
-            # strip trailing \r if present
-            if line.endswith(b'\r'):
-                line = line[:-1]
-
+            line = line.rstrip(b"\r ").lstrip()
             if not line:
                 continue
 
-            # Parse opcode: contiguous [A-Za-z]+ optionally followed by digits
-            # e.g., GA300 -> opcode="GA300"; often there is a '|' separating fields
-            op = []
-            for i, b in enumerate(line):
-                if 65 <= b <= 90 or 97 <= b <= 122 or 48 <= b <= 57:  # A-Z a-z 0-9
-                    op.append(b)
-                    continue
-                break
-            opcode = bytes(op).decode(errors="replace")
-            rest = line[len(op):].decode(errors="replace")
+            opcode = self._extract_opcode(line)
+            rest = line[len(opcode):].decode(errors="replace")
+
+            if not opcode and len(line) < 2:
+                continue
 
             frames.append({
                 "opcode": opcode,
-                "raw": line,        # bytes without delimiter
-                "text": rest,       # remainder as text (may start with '|' or other separators)
+                "raw": line,
+                "text": rest,
             })
 
         return frames
 
 
 class RetroReassembler:
-    """
-    Keyed by TCP 4-tuple (src, sport, dst, dport).
-    Feed raw TCP payload bytes per direction to extract ASCII lines (frames).
-    """
-
     def __init__(self):
-        self._streams: Dict[Tuple[str, int, str, int], RetroStream] = {}
+        self._streams: Dict[Tuple[str,int,str,int], RetroStream] = {}
 
-    def _get(self, k: Tuple[str, int, str, int]) -> RetroStream:
-        s = self._streams.get(k)
-        if s is None:
-            s = RetroStream()
-            self._streams[k] = s
-        return s
+    def _get(self, k: Tuple[str,int,str,int]) -> RetroStream:
+        st = self._streams.get(k)
+        if st is None:
+            st = RetroStream()
+            self._streams[k] = st
+        return st
 
-    def feed(self, four_tuple: Tuple[str, int, str, int], data: bytes) -> List[dict]:
+    def feed(self, four_tuple: Tuple[str,int,str,int], data: bytes) -> List[dict]:
         if not data:
             return []
         return self._get(four_tuple).feed(data)

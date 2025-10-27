@@ -117,3 +117,9 @@ Capture the loopback (IPC to 26117) + your Wi-Fi/Ethernet interface:
 sudo /home/cephes/Documents/ds/dofus-sniffer/.venv/bin/python main.py \
   --retro --loose-bpf --print-raw \
   --interfaces lo,wlan0
+
+### Dofus Retro — Capture only Dofus packets
+sudo /home/USER/Documents/ds/dofus-sniffer/.venv/bin/python main.py \
+  --retro --only-dofus --loose-bpf --print-raw \
+  --interfaces lo,wlan0 \
+  --proc-name dofus1electron --refresh-seconds 2

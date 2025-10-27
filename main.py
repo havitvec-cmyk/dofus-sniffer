@@ -8,46 +8,15 @@ from scapy.packet import Raw
 from Misc import sprint
 from Sniffer import Sniffer
 from parser.dofus_retro_framing import RetroReassembler
-from protocol.retro_opcodes import OPCODES
+from discover.dofus_targets import TargetSet, start_discovery_thread
+from protocol.retro_handlers import dispatch as retro_dispatch
 
 conf.use_pcap = True
 conf.sniff_promisc = False
 
 
 RETRO = RetroReassembler()
-
-
-def _parse_ports(s: str) -> Set[int]:
-    st: Set[int] = set()
-    for part in s.split(','):
-        part = part.strip()
-        if not part:
-            continue
-        if '-' in part:
-            a, b = map(int, part.split('-', 1))
-            st.update(range(min(a, b), max(a, b) + 1))
-        else:
-            st.add(int(part))
-    return st
-
-
-def _raw_fallback_print(pkt):
-    try:
-        ip = pkt.getlayer("IP")
-        tcp = pkt.getlayer("TCP")
-        if ip and tcp:
-            print(f"[RAW] {ip.src}:{tcp.sport} -> {ip.dst}:{tcp.dport}  len={len(bytes(pkt))}")
-        else:
-            print("[RAW]", pkt.summary())
-    except Exception:
-        try:
-            print("[RAW]", pkt.summary())
-        except Exception:
-            pass
-
-
-conf.use_pcap = True
-conf.sniff_promisc = False
+TARGETS = TargetSet()
 
 
 def _parse_ports(s: str) -> Set[int]:
@@ -98,13 +67,28 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Comma-separated list to override autodetected interfaces.")
     parser.add_argument("--ports", default=None,
                         help="Comma-separated or ranges to override autodetected ports.")
-    parser.add_argument("--retro", action="store_true", default=True,
+    parser.add_argument("--retro", action="store_true",
                         help="Use Dofus Retro ASCII parser.")
+    parser.add_argument("--only-dofus", action="store_true",
+                        help="Capture only Dofus process sockets.")
+    parser.add_argument("--proc-name", action="append",
+                        help="Process name(s) to match, e.g. dofus1electron.")
+    parser.add_argument("--refresh-seconds", type=float, default=3.0,
+                        help="Refresh rate for Dofus socket discovery.")
     return parser
 
 
 def _run_cli():
     args = _build_parser().parse_args()
+
+    if not hasattr(args, "retro"):
+        args.retro = True
+    elif not args.retro:
+        args.retro = True
+
+    if args.only_dofus:
+        names = args.proc_name or None
+        start_discovery_thread(TARGETS, names, args.refresh_seconds)
 
     manual_ports_list: Optional[List[int]] = None
     manual_ports_set: Set[int] = set()
@@ -160,22 +144,18 @@ def _run_cli():
                 if IP in pkt and TCP in pkt:
                     ip = pkt[IP]
                     tcp = pkt[TCP]
-                    raw_layer = pkt.getlayer(Raw)
-                    if raw_layer and getattr(raw_layer, "load", None):
+                    raw = pkt.getlayer(Raw)
+                    if raw and getattr(raw, "load", None):
                         k = (ip.src, int(tcp.sport), ip.dst, int(tcp.dport))
-                        frames = RETRO.feed(k, raw_layer.load)
+                        frames = RETRO.feed(k, raw.load)
                         for fr in frames:
-                            name = OPCODES.get(fr["opcode"])
-                            if name:
-                                print(
-                                    f"[RETRO] {ip.src}:{tcp.sport}->{ip.dst}:{tcp.dport} "
-                                    f"op={fr['opcode']} ({name}) text={fr['text']!r}"
-                                )
-                            else:
-                                print(
-                                    f"[RETRO] {ip.src}:{tcp.sport}->{ip.dst}:{tcp.dport} "
-                                    f"op={fr['opcode']} text={fr['text']!r}"
-                                )
+                            opcode = fr["opcode"]
+                            text = fr["text"]
+                            summary = retro_dispatch(opcode, text)
+                            print(
+                                f"[RETRO] {ip.src}:{tcp.sport}->{ip.dst}:{tcp.dport} "
+                                f"op={opcode or '?'} {summary}"
+                            )
                             frames_emitted = True
             except Exception as e:
                 print("retro_packet_error:", e)
@@ -205,26 +185,58 @@ def _run_cli():
         except Exception:
             pass
 
+    def lfilter_only_dofus(pkt) -> bool:
+        if not args.only_dofus:
+            return True
+        if IP not in pkt or TCP not in pkt:
+            return False
+        ip = pkt[IP]
+        tcp = pkt[TCP]
+        ports, ips = TARGETS.snapshot()
+        try:
+            sport = int(tcp.sport)
+            dport = int(tcp.dport)
+        except Exception:
+            sport = tcp.sport
+            dport = tcp.dport
+        if sport in ports or dport in ports:
+            return True
+        if ip.src in ips or ip.dst in ips:
+            return True
+        return False
+
     if args.loose_bpf:
         bpf = "tcp"
 
         def _lfilter(pkt):
-            if not pkt.haslayer(Raw):
+            if not lfilter_only_dofus(pkt):
                 return False
-            if not ports_set:
-                return True
             try:
                 tcp = pkt[TCP]
-                return (tcp.sport in ports_set) or (tcp.dport in ports_set)
+                sport = int(tcp.sport)
+                dport = int(tcp.dport)
             except Exception:
                 return False
+
+            combined_ports: Set[int]
+            if ports_set:
+                combined_ports = set(ports_set)
+            else:
+                combined_ports = set()
+            if args.only_dofus:
+                dyn_ports, _ = TARGETS.snapshot()
+                if dyn_ports:
+                    combined_ports.update(dyn_ports)
+            if not combined_ports:
+                return True
+            return (sport in combined_ports) or (dport in combined_ports)
 
         sniff(iface=iface_param, filter=bpf, lfilter=_lfilter, prn=on_packet, store=False)
     else:
         sniff(
             iface=iface_param,
             filter=sniffer._build_filter(),
-            lfilter=lambda pkt: pkt.haslayer(Raw),
+            lfilter=lambda pkt: pkt.haslayer(Raw) and lfilter_only_dofus(pkt),
             prn=on_packet,
             store=False,
         )

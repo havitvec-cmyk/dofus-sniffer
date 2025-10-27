@@ -46,6 +46,39 @@ def _raw_fallback_print(pkt):
             pass
 
 
+conf.use_pcap = True
+conf.sniff_promisc = False
+
+
+def _parse_ports(s: str) -> Set[int]:
+    st: Set[int] = set()
+    for part in s.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            a, b = map(int, part.split('-', 1))
+            st.update(range(min(a, b), max(a, b) + 1))
+        else:
+            st.add(int(part))
+    return st
+
+
+def _raw_fallback_print(pkt):
+    try:
+        ip = pkt.getlayer("IP")
+        tcp = pkt.getlayer("TCP")
+        if ip and tcp:
+            print(f"[RAW] {ip.src}:{tcp.sport} -> {ip.dst}:{tcp.dport}  len={len(bytes(pkt))}")
+        else:
+            print("[RAW]", pkt.summary())
+    except Exception:
+        try:
+            print("[RAW]", pkt.summary())
+        except Exception:
+            pass
+
+
 def action(id, msg):
     print(msg)
     print('-')

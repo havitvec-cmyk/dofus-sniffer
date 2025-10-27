@@ -94,3 +94,19 @@ The override is also available on `run`:
 sniffer = Sniffer()
 sniffer.run(callback, ports=443)
 ```
+
+### Debug: always see packets
+# Loopback (IPC)
+sudo python tools/scapy_lo_test.py
+
+# Multi-if, robust capture that always prints:
+sudo python tools/live_capture_debug.py -i lo,wlan0 -p 26117,52000-60000
+
+# Main sniffer with robust mode:
+sudo python main.py --loose-bpf --print-raw --interfaces lo,wlan0 --ports 26117,52000-60000
+
+Notes
+
+Replace wlan0 with your actual Wi-Fi interface (e.g., wlp3s0).
+
+Refresh ports from sudo ss -tupn | grep -i dofus each launch if needed.
